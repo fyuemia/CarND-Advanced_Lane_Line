@@ -39,7 +39,7 @@ for i, fName in enumerate(images):
 
 ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objPoints, imgPoints, gray.shape[::-1], None, None)
 camera_param = {"mtx": mtx, "dist": dist, "rvecs": rvecs, "tvecs":tvecs}
-np.save("../camera_cal_output/camera_param.npy", camera_param)
+np.save("../param/camera_param.npy", camera_param)
 
 for i, fName in enumerate(images):
     # read in each image

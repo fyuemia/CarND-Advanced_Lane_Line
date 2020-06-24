@@ -14,17 +14,29 @@ dist = camera_param["dist"]
 
 
 def get_perspective_transform(img):
-    src_left_bottom = [150, 720]  # left bottom
-    src_right_bottom = [1250, 720]  # right bottom
-    src_left_top = [590, 450]  # left top
-    src_right_top = [700, 450]  # right top
+    # src_left_bottom = [150, 720]  # left bottom
+    # src_right_bottom = [1250, 720]  # right bottom
+    # src_left_top = [590, 450]  # left top
+    # src_right_top = [700, 450]  # right top
     # image size
     img_size = (img.shape[1], img.shape[0])
-    src = np.float32([src_left_bottom, src_right_bottom, src_right_top, src_left_top])
-    offset = 200
-    dst = np.float32(
-        [[offset, 0], [img_size[0] - offset, 0], [img_size[0] - offset, img_size[1]], [offset, img_size[1]]])
+    # src = np.float32([src_left_bottom, src_right_bottom, src_right_top, src_left_top])
+    # offset = 200
+    # dst = np.float32(
+    #     [[offset, 0], [img_size[0] - offset, 0], [img_size[0] - offset, img_size[1]], [offset, img_size[1]]])
     # Given src and dst points, calculate the perspective transform matrix
+
+    img_size = (img.shape[1], img.shape[0])
+    src = np.float32(
+        [[(img_size[0] / 2) - 63, img_size[1] / 2 + 100],
+         [((img_size[0] / 6) - 20), img_size[1]],
+         [(img_size[0] * 5 / 6) + 60, img_size[1]],
+         [(img_size[0] / 2 + 65), img_size[1] / 2 + 100]])
+    dst = np.float32(
+        [[(img_size[0] / 4), 0],
+         [(img_size[0] / 4), img_size[1]],
+         [(img_size[0] * 3 / 4), img_size[1]],
+         [(img_size[0] * 3 / 4), 0]])
     return cv2.getPerspectiveTransform(src, dst)
 
 
@@ -193,7 +205,7 @@ def find_lane_pixels(binary_warped):
     return leftx, lefty, rightx, righty, out_img
 
 
-def fit_polynomial(binary_warped):
+def fit_polynomial_and_draw(binary_warped):
     # Find our lane pixels first
     leftx, lefty, rightx, righty, out_img = find_lane_pixels(binary_warped)
 
@@ -231,9 +243,225 @@ def fit_polynomial(binary_warped):
 
     return out_img
 
+def fit_polynomial(binary_warped):
+    # Find our lane pixels first
+    leftx, lefty, rightx, righty, out_img = find_lane_pixels(binary_warped)
+
+    left_fit = np.polyfit(lefty, leftx, 2)
+    right_fit = np.polyfit(righty, rightx, 2)
+    return left_fit, right_fit
+
+def roi(img, vertices):
+    # Next we'll create a masked edges image using cv2.fillPoly()
+    mask = np.zeros_like(img)
+    ignore_mask_color = 1
+    cv2.fillPoly(mask, vertices, ignore_mask_color)
+    masked_img = cv2.bitwise_and(img, mask)
+    return masked_img
+
+
+def fit_poly(img_shape, leftx, lefty, rightx, righty):
+    ### TO-DO: Fit a second order polynomial to each with np.polyfit() ###
+    left_fit = np.polyfit(lefty, leftx, 2)
+    right_fit = np.polyfit(righty, rightx, 2)
+    # Generate x and y values for plotting
+    ploty = np.linspace(0, img_shape[0] - 1, img_shape[0])
+    ### TO-DO: Calc both polynomials using ploty, left_fit and right_fit ###
+    left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2]
+    right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2]
+
+    return left_fitx, right_fitx, ploty
+
+def search_around_poly(binary_warped,left_fit, right_fit):
+    # HYPERPARAMETER
+    # Choose the width of the margin around the previous polynomial to search
+    # The quiz grader expects 100 here, but feel free to tune on your own!
+    margin = 100
+
+    # Grab activated pixels
+    nonzero = binary_warped.nonzero()
+    nonzeroy = np.array(nonzero[0])
+    nonzerox = np.array(nonzero[1])
+
+    left_lane_inds = ((nonzerox > (left_fit[0] * (nonzeroy ** 2) + left_fit[1] * nonzeroy +
+                                   left_fit[2] - margin)) & (nonzerox < (left_fit[0] * (nonzeroy ** 2) +
+                                                                         left_fit[1] * nonzeroy + left_fit[
+                                                                             2] + margin)))
+    right_lane_inds = ((nonzerox > (right_fit[0] * (nonzeroy ** 2) + right_fit[1] * nonzeroy +
+                                    right_fit[2] - margin)) & (nonzerox < (right_fit[0] * (nonzeroy ** 2) +
+                                                                           right_fit[1] * nonzeroy + right_fit[
+                                                                               2] + margin)))
+
+    # Again, extract left and right line pixel positions
+    leftx = nonzerox[left_lane_inds]
+    lefty = nonzeroy[left_lane_inds]
+    rightx = nonzerox[right_lane_inds]
+    righty = nonzeroy[right_lane_inds]
+
+    # Fit new polynomials
+    left_fitx, right_fitx, ploty = fit_poly(binary_warped.shape, leftx, lefty, rightx, righty)
+
+    ## Visualization ##
+    # Create an image to draw on and an image to show the selection window
+    out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
+    window_img = np.zeros_like(out_img)
+    # Color in left and right line pixels
+    out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [255, 0, 0]
+    out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 0, 255]
+
+    # Generate a polygon to illustrate the search window area
+    # And recast the x and y points into usable format for cv2.fillPoly()
+    left_line_window1 = np.array([np.transpose(np.vstack([left_fitx - margin, ploty]))])
+    left_line_window2 = np.array([np.flipud(np.transpose(np.vstack([left_fitx + margin,
+                                                                    ploty])))])
+    left_line_pts = np.hstack((left_line_window1, left_line_window2))
+    right_line_window1 = np.array([np.transpose(np.vstack([right_fitx - margin, ploty]))])
+    right_line_window2 = np.array([np.flipud(np.transpose(np.vstack([right_fitx + margin,
+                                                                     ploty])))])
+    right_line_pts = np.hstack((right_line_window1, right_line_window2))
+
+    # Draw the lane onto the warped blank image
+    cv2.fillPoly(window_img, np.int_([left_line_pts]), (0, 255, 0))
+    cv2.fillPoly(window_img, np.int_([right_line_pts]), (0, 255, 0))
+    result = cv2.addWeighted(out_img, 1, window_img, 0.3, 0)
+
+    # Plots the left and right polynomials on the lane lines
+    points = np.vstack((left_fitx,ploty)).T.reshape(-1, 2)
+    for index, item in enumerate(points):
+        if index == ploty.shape[0] - 1:
+            break
+        cv2.line(result, tuple(item.astype(int)), tuple(points[index + 1].astype(int)), color=[0,255,0], thickness=10)
+
+    points = np.vstack((right_fitx,ploty)).T.reshape(-1, 2)
+    for index, item in enumerate(points):
+        if index == ploty.shape[0] - 1:
+            break
+        cv2.line(result, tuple(item.astype(int)), tuple(points[index + 1].astype(int)), color=[0,255,0], thickness=10)
+
+    return result
+
+
+# Unwarp Image and plot line
+
+def DrawLine(original_image, binary_warped, Minv, left_fit, right_fit):
+    h, w = binary_warped.shape
+    ploty = np.linspace(0, binary_warped.shape[0] - 1, binary_warped.shape[0])
+    left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2]
+    right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2]
+    warp_zero = np.zeros_like(binary_warped).astype(np.uint8)
+    color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
+
+    ploty = np.linspace(0, h - 1, num=h)  # to cover same y-range as image
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    # Draw the lane onto the warped blank image
+    cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
+    cv2.polylines(color_warp, np.int32([pts_left]), isClosed=False, color=(255, 0, 255), thickness=15)
+    cv2.polylines(color_warp, np.int32([pts_right]), isClosed=False, color=(0, 255, 255), thickness=15)
+
+    # Warp the blank back to original image space using inverse perspective matrix (Minv)
+    newwarp = cv2.warpPerspective(color_warp, Minv, (w, h))
+    # axes[index+1].imshow(newwarp)
+    # Combine the result with the original image
+    result = cv2.addWeighted(original_image, 1, newwarp, 0.5, 0)
+    return result
+
+
+def measure_curvature_pixels(ploty, left_fit, right_fit):
+    # Define y-value where we want radius of curvature
+    # We'll choose the maximum y-value, corresponding to the bottom of the image
+    y_eval = np.max(ploty)
+
+    left_curverad = ((1 + (2 * left_fit[0] * y_eval + left_fit[1]) ** 2) ** 1.5) / np.absolute(2 * left_fit[0])
+    right_curverad = ((1 + (2 * right_fit[0] * y_eval + right_fit[1]) ** 2) ** 1.5) / np.absolute(2 * right_fit[0])
+
+    return left_curverad, right_curverad
+
+
+def measure_curv(leftx, lefty, rightx, righty, ym_per_pix=30 / 720, xm_per_pix=3.7 / 700):
+    '''
+    Calcualtes the curvature of polynomial functions in meters and the offset from the lancenter
+    '''
+    Y_MAX = 720  # this is the image height
+    X_MAX = 1280  # this is the image width
+    # Transform pixel to meters
+    leftx = leftx * xm_per_pix
+    lefty = lefty * ym_per_pix
+    rightx = rightx * xm_per_pix
+    righty = righty * ym_per_pix
+
+    # fit the polynomial
+    left_fit_cr = np.polyfit(lefty, leftx, 2)
+    right_fit_cr = np.polyfit(righty, rightx, 2)
+
+    # Define y-value where we want radius of curvature
+    # choose the maximum y-value
+    y_eval = Y_MAX * ym_per_pix
+
+    # Implement the caculation of R_curve
+    # Caluate the radius R = (1+(2Ay+B)^2)^3/2 / (|2A|)
+    radius_fun = lambda A, B, y: (1 + (2 * A * y + B) ** 2) ** (3 / 2) / abs(2 * A)
+
+    left_curverad = radius_fun(left_fit_cr[0], left_fit_cr[1], y_eval)
+    right_curverad = radius_fun(right_fit_cr[0], right_fit_cr[1], y_eval)
+
+    return left_curverad, right_curverad
+
+
+def measure_offset(leftx, lefty, rightx, righty, ym_per_pix=30 / 720, xm_per_pix=3.7 / 700):
+    '''
+    calculate the the offest from lane center
+    '''
+    # HYPOTHESIS : the camera is mounted at the center of the car
+    # the offset of the lane center from the center of the image is
+    # distance from the center of lane
+
+    Y_MAX = 720  # this is the image height
+    X_MAX = 1280  # this is the image width
+    # Transform pixel to meters
+    leftx = leftx * xm_per_pix
+    lefty = lefty * ym_per_pix
+    rightx = rightx * xm_per_pix
+    righty = righty * ym_per_pix
+
+    # fit the polynomial
+    left_fit_cr = np.polyfit(lefty, leftx, 2)
+    right_fit_cr = np.polyfit(righty, rightx, 2)
+
+    # Define y-value where we want radius of curvature
+    # choose the maximum y-value
+    y_eval = Y_MAX * ym_per_pix
+
+    left_point = np.poly1d(left_fit_cr)(y_eval)
+    right_point = np.poly1d(right_fit_cr)(y_eval)
+
+    lane_center = (left_point + right_point) / 2
+    image_center = X_MAX * xm_per_pix / 2
+
+    offset = lane_center - image_center
+
+    return offset
+
 
 for fName in images:
     image = mpimg.imread(fName)
+    img_size = (image.shape[1], image.shape[0])
+    src = np.float32(
+        [[(img_size[0] / 2) - 63, img_size[1] / 2 + 100],
+         [((img_size[0] / 6) - 20), img_size[1]],
+         [(img_size[0] * 5 / 6) + 60, img_size[1]],
+         [(img_size[0] / 2 + 65), img_size[1] / 2 + 100]])
+    dst = np.float32(
+        [[(img_size[0] / 4), 0],
+         [(img_size[0] / 4), img_size[1]],
+         [(img_size[0] * 3 / 4), img_size[1]],
+         [(img_size[0] * 3 / 4), 0]])
+    M = cv2.getPerspectiveTransform(src, dst)
+    Minv = cv2.getPerspectiveTransform(dst, src)
 
     undist = undistort_image(image)
 
@@ -251,22 +479,63 @@ for fName in images:
     combined = np.zeros_like(dir_binary)
     combined[((gradx == 1) & (grady == 1)) | ((mag_binary == 1) & (dir_binary == 1)) | (hlsFiltered == 1)] = 1
 
-    M = get_perspective_transform(combined)
-    img_size = (combined.shape[1], combined.shape[0])
-    warped = cv2.warpPerspective(combined, M, img_size)
+    # region of interest
+    imshape = image.shape
+    left_bottom = (120,imshape[0])
+    left_top = (int(imshape[1]*0.45), int(imshape[0]*0.6))
+    right_top = (int(imshape[1]*0.55), int(imshape[0]*0.6))
+    right_bottom = (imshape[1]-50,imshape[0])
+    vertices = np.array([[left_bottom,left_top, right_top, right_bottom]], dtype=np.int32)
+    masked_combined = roi(combined,vertices)
 
-    laneImg = fit_polynomial(warped)
+    img_size = (masked_combined.shape[1], masked_combined.shape[0])
+    warped = cv2.warpPerspective(masked_combined, M, img_size)
 
-    imageList = {"origin": image,
-                 "combined": combined,
-                 "warped": warped,
-                 "lane": laneImg}
+    laneImg = fit_polynomial_and_draw(warped)
 
-    fig, axes = plt.subplots(nrows=(len(imageList) // 2), ncols=2, figsize=(20, 10))
-    axes = axes.flatten()
-    for index, (ax, key) in enumerate(zip(axes, imageList.keys())):
-        ax.imshow(imageList[key].astype(np.uint8), cmap="gray")
-        ax.set_title(key)
-        ax.axis('off')
-    plt.suptitle(fName.split("/")[-1].replace(".jpg", ""))
-    plt.show()
+    left_fit, right_fit = fit_polynomial(warped)
+    lanePolyImg = search_around_poly(warped,left_fit,right_fit)
+
+    result = DrawLine(image, warped,Minv,left_fit,right_fit)
+
+    color = (0, 0, 255)
+    linethickness = 3
+    cv2.line(image, tuple(left_bottom), tuple(left_top), color, thickness=linethickness)
+    cv2.line(image, tuple(left_top), tuple(right_top), color, thickness=linethickness)
+    cv2.line(image, tuple(right_top), tuple(right_bottom), color, thickness=linethickness)
+    cv2.line(image, tuple(right_bottom), tuple(left_bottom), color, thickness=linethickness)
+
+    # imageList = {"origin": image,
+    #              "combined": combined,
+    #              "warped": warped,
+    #              "lane": laneImg}
+    print(image.shape)
+    imageList = {"undist": undist,
+                 "hls":hlsFiltered,
+                 "gradx": gradx,
+                 "grady": grady,
+                 "mag": mag_binary,
+                 "dir":dir_binary,
+                 "combine":combined,
+                 "masked_combine": masked_combined,
+                 "warped":warped,
+                 "lane":laneImg,
+                 "lanePloy":lanePolyImg,
+                 "result":result}
+
+    # fig, axes = plt.subplots(nrows=(np.ceil(len(imageList)/2).astype(int)), ncols=2, figsize=(20, 40))
+    # axes = axes.flatten()
+    # for index, (ax, key) in enumerate(zip(axes, imageList.keys())):
+    #     ax.imshow(imageList[key].astype(np.uint8), cmap="gray")
+    #     ax.set_title(key, fontsize=40)
+    #     ax.axis('off')
+    # plt.suptitle(fName.split("/")[-1].replace(".jpg", ""),fontsize=50)
+    # plt.savefig("../output_project_images/challenge/result_"+fName.split("/")[-1])
+    # plt.close(fig)
+    #
+    for index, key in enumerate(imageList.keys()):
+        fig = plt.figure()
+        plt.imshow(imageList[key].astype(np.uint8), cmap="gray")
+        plt.title(key)
+        plt.savefig("../output_images/result_"+key+"_"+fName.split("/")[-1])
+        plt.close(fig)
